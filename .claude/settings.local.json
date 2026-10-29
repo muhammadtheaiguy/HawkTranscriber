@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /b D:\\\\AntiGravity\\\\WhisperTranscriber)",
+      "Bash(cmd /c \"dir C:\\\\Users\\\\Muhammad Aslam\\\\Desktop\\\\anti\\\\WhisperTranscriber\\\\* /b /a:-d 2>/dev/null | head -50\")",
+      "Bash(dir /b)",
+      "Bash(dir /b \"D:\\\\AntiGravity\\\\WhisperTranscriber\\\\whisperdesk\")",
+      "Bash(dir /b \"D:\\\\AntiGravity\\\\WhisperTranscriber\\\\tests\")",
+      "Bash(dir /b \"D:\\\\AntiGravity\\\\WhisperTranscriber\\\\.claude\")",
+      "Bash(.venv\\\\Scripts\\\\python.exe -m yt_dlp --version)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import yt_dlp; print\\(yt_dlp.__version__\\)\")",
+      "Bash(python -c \"import yt_dlp; print\\(yt_dlp.__version__\\)\")",
+      "Bash(python -c \"import yt_dlp; print\\(dir\\(yt_dlp\\)\\)\")",
+      "Bash(python -c \"import yt_dlp; print\\(yt_dlp.version.__import__ if hasattr\\(yt_dlp, 'version'\\) else 'no version attr'\\)\")",
+      "Bash(python -c \"import yt_dlp; print\\(getattr\\(yt_dlp, 'version', 'no version attr'\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import yt_dlp; print\\(yt_dlp.version\\)\")",
+      "Bash(findstr /v /c:\".venv\")",
+      "Bash(findstr /v /c:\".gitignore\")",
+      "Bash(findstr /v /c:\"__pycache__\")",
+      "Bash(findstr /v /c:\".claude\")",
+      "Bash(findstr /v /c:\"PROGRESS\")",
+      "Bash(findstr /v /c:\"README\")",
+      "Bash(findstr /v /c:\"requirements\")",
+      "Bash(findstr /v /c:\"setup.bat\")",
+      "Bash(findstr /v /c:\"run.bat\")",
+      "Bash(python)",
+      "Bash(dir /b /s \"source.*\")",
+      "Bash(dir /b data\\\\media\\\\*)",
+      "Bash(dir /b source.*)",
+      "Bash(.venv\\\\Scripts\\\\python.exe -m unittest discover -s tests -v)",
+      "Bash(python -m unittest discover -s tests -v)",
+      "Bash(cd \"D:\\\\AntiGravity\\\\WhisperTranscriber\" && rm -f \"Rick Astley - Never Gonna Give You Up \\(Official Video\\) \\(4K Remaster\\) [dQw4w9WgXcQ].webm\" && ls -la)",
+      "Bash(.\\\\.claude\\\\organize\\\\python -c \"from whisperdesk import server; print\\('Import OK'\\)\")"
+    ]
+  }
+}
