@@ -17,3 +17,6 @@ python-multipart==0.0.32
 
 # --- Public social media link imports (uses FFmpeg for media validation) ---
 yt-dlp[default]==2026.8.19
+
+# --- Pause/resume of running transcriptions ---
+psutil==7.2.2

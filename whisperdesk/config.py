@@ -20,6 +20,7 @@ DEFAULTS: dict[str, Any] = {
     "keep_media": True,
     "autosave_edits": True,
     "max_loaded_models": 1,
+    "max_parallel_jobs": 2,  # 1-3 transcriptions at once (each loads its own model)
 }
 
 _THEMES = {"system", "light", "dark"}
@@ -41,11 +42,11 @@ def _coerce(key: str, value: Any) -> Any:
         return str(value) if value else DEFAULTS["default_model"]
     if key in {"word_timestamps", "condition_on_previous_text", "keep_media", "autosave_edits"}:
         return bool(value)
-    if key == "max_loaded_models":
+    if key in {"max_loaded_models", "max_parallel_jobs"}:
         try:
-            return max(1, min(4, int(value)))
+            return max(1, min(4 if key == "max_loaded_models" else 3, int(value)))
         except (TypeError, ValueError):
-            return DEFAULTS["max_loaded_models"]
+            return DEFAULTS[key]
     return value
 
 

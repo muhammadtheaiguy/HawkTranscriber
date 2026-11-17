@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import re
 import shutil
+import subprocess
+import sys
 import time
 import logging
 from logging.handlers import RotatingFileHandler
@@ -25,7 +27,7 @@ from . import config, exporters, hardware, mediatools, models, paths, social
 from .jobs import JobManager
 from .store import Store, TERMINAL_STATUSES, new_id
 
-MAX_UPLOAD_BYTES = 4 * 1024**3  # 4 GB
+MAX_UPLOAD_BYTES = 100 * 1024**3  # 100 GB: local app, disk space is the real limit
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]+")
 
@@ -255,7 +257,7 @@ async def create_transcription(request):
         return _json({"error": "The uploaded file was empty."}, 400)
     if size > MAX_UPLOAD_BYTES:
         destination.unlink(missing_ok=True)
-        return _json({"error": "The file exceeds the 4 GB upload limit."}, 400)
+        return _json({"error": "The file exceeds the 100 GB upload limit."}, 400)
 
     try:
         info = mediatools.probe(destination)
@@ -278,6 +280,84 @@ async def create_transcription(request):
     )
     ctx.jobs.submit(job_id)
 
+    warning = models.memory_warning(model, hardware.detect().total_ram_gb)
+    return _json({"job": _job_public(job, ctx.jobs.live_state(job_id)), "warning": warning}, 201)
+
+
+def _unlink_owned(value: str) -> None:
+    """Delete a media file only if the app owns it; linked originals are never touched."""
+    path = Path(value)
+    if path.resolve().is_relative_to(paths.MEDIA_DIR.resolve()):
+        path.unlink(missing_ok=True)
+
+
+_PICKER = (
+    "import tkinter as t, tkinter.filedialog as f;"
+    "r=t.Tk();r.withdraw();r.attributes('-topmost',True);"
+    "print(f.askopenfilename(title='Choose an audio or video file'))"
+)
+
+
+async def pick_file(request):
+    """Open the OS file dialog on this machine; returns the chosen path (no upload)."""
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run, [sys.executable, "-c", _PICKER], capture_output=True, text=True
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _json({"error": f"Could not open the file picker: {exc}"}, 500)
+    if result.returncode != 0:
+        return _json({"error": "The file picker is not available on this system."}, 500)
+    chosen = result.stdout.strip()
+    if not chosen:
+        return _json({"cancelled": True})
+    file = Path(chosen)
+    if not file.is_file():
+        return _json({"error": "That file could not be found."}, 400)
+    return _json({"path": str(file), "name": file.name, "size": file.stat().st_size})
+
+
+async def create_transcription_from_path(request):
+    """Transcribe a file where it already lives on disk: nothing is copied or uploaded."""
+    ctx = request.app.state.ctx
+    try:
+        payload = await request.json()
+    except Exception:
+        return _json({"error": "Invalid JSON body."}, 400)
+    if not isinstance(payload, dict):
+        return _json({"error": "Expected a file path and settings."}, 400)
+
+    file = Path(str(payload.get("path") or "").strip().strip('"'))
+    if not file.is_absolute() or not file.is_file():
+        return _json({"error": "That file could not be found on this computer."}, 400)
+    if not mediatools.is_supported_extension(file.name):
+        return _json({"error": f"'{file.suffix}' is not a supported format."}, 400)
+    try:
+        info = mediatools.probe(file)
+    except mediatools.MediaError as exc:
+        return _json({"error": str(exc)}, 400)
+
+    settings = config.load()
+    model = str(payload.get("model") or settings["default_model"])
+    if models.get_spec(model) is None:
+        model = settings["default_model"]
+    task = str(payload.get("task") or settings["default_task"])
+    if task not in {"transcribe", "translate"}:
+        task = "transcribe"
+
+    job = ctx.store.create(
+        job_id=(job_id := new_id()),
+        title=file.stem.strip() or "Untitled transcription",
+        source_name=file.name,
+        media_path=str(file),
+        media_size=file.stat().st_size,
+        duration=info.duration,
+        model=model,
+        language=str(payload.get("language") or settings["default_language"]),
+        task=task,
+        word_timestamps=bool(payload.get("word_timestamps")),
+    )
+    ctx.jobs.submit(job_id)
     warning = models.memory_warning(model, hardware.detect().total_ram_gb)
     return _json({"job": _job_public(job, ctx.jobs.live_state(job_id)), "warning": warning}, 201)
 
@@ -327,7 +407,7 @@ async def create_transcription_from_url(request):
         if size <= 0:
             raise ValueError("The platform returned an empty media file.")
         if size > MAX_UPLOAD_BYTES:
-            raise ValueError("This media file is larger than the 4 GB limit.")
+            raise ValueError("This media file is larger than the 100 GB limit.")
         media_info = mediatools.probe(destination)
         source_name = final_name
         job = ctx.store.create(
@@ -372,6 +452,19 @@ async def cancel_job(request):
     ctx.jobs.cancel(job["id"])
     logging.getLogger(__name__).info("Cancellation requested: job=%s", job["id"])
     return _json({"ok": True})
+
+
+def _job_action(name: str):
+    async def handler(request):
+        ctx = request.app.state.ctx
+        job = ctx.store.get(request.path_params["job_id"])
+        if not job:
+            return _json({"error": "Job not found."}, 404)
+        if not getattr(ctx.jobs, name)(job["id"]):
+            return _json({"error": "That action is not available for this job right now."}, 409)
+        return _json({"ok": True})
+
+    return handler
 
 
 async def cancel_social_download(request):
@@ -425,7 +518,7 @@ async def delete_job(request):
         ctx.jobs.cancel(job_id)
     removed = ctx.store.delete(job_id)
     if removed and removed.get("media_path"):
-        Path(removed["media_path"]).unlink(missing_ok=True)
+        _unlink_owned(removed["media_path"])
     return _json({"ok": True})
 
 
@@ -442,7 +535,7 @@ async def clear_history(request):
             ctx.jobs.cancel(job["id"])
             continue
         if delete_media and job.get("media_path"):
-            Path(job["media_path"]).unlink(missing_ok=True)
+            _unlink_owned(job["media_path"])
     count = ctx.store.clear()
     if delete_media:
         for entry in paths.MEDIA_DIR.glob("*"):
@@ -475,6 +568,10 @@ async def export_job(request):
     segments = job.get("segments") or []
     if not segments and not (job.get("text") or "").strip():
         return _json({"error": "There is no transcript to export yet."}, 409)
+    word_level = (
+        request.query_params.get("word_level", "").lower() in {"1", "true", "yes", "on"}
+        and any(segment.get("words") for segment in segments)
+    )
 
     metadata = {
         "id": job["id"],
@@ -489,13 +586,14 @@ async def export_job(request):
     }
     try:
         payload, extension, mime = exporters.build_export(
-            fmt, segments, job.get("text") or "", metadata
+            fmt, segments, job.get("text") or "", metadata, word_level=word_level
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
 
     safe = _SAFE_NAME.sub("_", job["title"]).strip() or "transcript"
-    filename = f"{safe}.{extension}"
+    suffix = "_word_by_word" if word_level and fmt != "json" else ""
+    filename = f"{safe}{suffix}.{extension}"
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Cache-Control": "no-store",
@@ -528,6 +626,11 @@ def create_app() -> Starlette:
         Route("/api/jobs/{job_id}", update_job, methods=["PATCH"]),
         Route("/api/jobs/{job_id}", delete_job, methods=["DELETE"]),
         Route("/api/jobs/{job_id}/cancel", cancel_job, methods=["POST"]),
+        Route("/api/pick-file", pick_file, methods=["POST"]),
+        Route("/api/jobs/from-path", create_transcription_from_path, methods=["POST"]),
+        Route("/api/jobs/{job_id}/pause", _job_action("pause"), methods=["POST"]),
+        Route("/api/jobs/{job_id}/resume", _job_action("resume"), methods=["POST"]),
+        Route("/api/jobs/{job_id}/prioritize", _job_action("prioritize"), methods=["POST"]),
         Route("/api/jobs/{job_id}/cancel-download", cancel_social_download, methods=["POST"]),
         Route("/api/jobs/{job_id}/media", job_media, methods=["GET"]),
         Route("/api/jobs/{job_id}/export/{fmt}", export_job, methods=["GET"]),

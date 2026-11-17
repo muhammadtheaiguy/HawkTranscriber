@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 """
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
-ACTIVE_STATUSES = {"queued", "loading", "running", "saving"}
+ACTIVE_STATUSES = {"queued", "loading", "running", "saving", "paused"}
 
 
 def utc_now() -> str:

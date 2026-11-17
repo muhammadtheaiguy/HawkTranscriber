@@ -249,4 +249,4 @@ developer workflows. Contribution guidelines are in [`CONTRIBUTING.md`](CONTRIBU
 ## Support
 
 - [Open an issue](https://github.com/anthropics/claude-code/issues/new) if you find a bug.
-- Built using [Claude Code](https://claude.com/claude-code) with assistance from Anthropic.
+

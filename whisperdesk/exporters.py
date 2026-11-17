@@ -65,6 +65,102 @@ def segments_to_timestamped_text(segments: list[Segment]) -> str:
     return "\n".join(lines)
 
 
+def _timed_export_items(segments: list[Segment]):
+    """Yield word timing rows, falling back to a segment when words are absent."""
+    for segment_index, segment in enumerate(segments, start=1):
+        words = segment.get("words") or []
+        if words:
+            for word_index, word in enumerate(words, start=1):
+                if not isinstance(word, dict):
+                    continue
+                text = str(word.get("word", "")).strip()
+                if not text:
+                    continue
+                start = word.get("start", segment.get("start", 0.0))
+                end = word.get("end", start)
+                yield segment_index, word_index, start, end, text, word.get("probability")
+        else:
+            text = _segment_text(segment)
+            if text:
+                start = segment.get("start", 0.0)
+                yield segment_index, 0, start, segment.get("end", start), text, None
+
+
+def segments_to_word_timestamped_text(segments: list[Segment]) -> str:
+    return "\n".join(
+        f"[{format_timestamp(start, '.')} --> {format_timestamp(end, '.')}] {text}"
+        for _, _, start, end, text, _ in _timed_export_items(segments)
+    )
+
+
+def segments_to_word_srt(segments: list[Segment]) -> str:
+    blocks = []
+    for index, (_, _, start, end, text, _) in enumerate(_timed_export_items(segments), start=1):
+        blocks.append(
+            f"{index}\n{format_timestamp(start, ',')} --> {format_timestamp(end, ',')}\n{text}\n"
+        )
+    return "\n".join(blocks).strip() + ("\n" if blocks else "")
+
+
+def segments_to_word_vtt(segments: list[Segment]) -> str:
+    lines = ["WEBVTT", ""]
+    for _, _, start, end, text, _ in _timed_export_items(segments):
+        lines.extend((f"{format_timestamp(start, '.')} --> {format_timestamp(end, '.')}", text, ""))
+    return "\n".join(lines).strip() + "\n"
+
+
+def segments_to_word_csv(segments: list[Segment]) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(["segment_index", "word_index", "start", "end", "start_seconds", "end_seconds", "word", "probability"])
+    for segment_index, word_index, start, end, text, probability in _timed_export_items(segments):
+        writer.writerow([
+            segment_index,
+            word_index or "",
+            format_timestamp(start, "."),
+            format_timestamp(end, "."),
+            round(float(start), 3),
+            round(float(end), 3),
+            text,
+            probability if probability is not None else "",
+        ])
+    return buffer.getvalue()
+
+
+def segments_to_word_docx(title: str, segments: list[Segment]) -> bytes:
+    paragraphs = [_docx_paragraph(title, bold=True, size=32), _docx_paragraph("", size=22)]
+    for _, _, start, end, text, _ in _timed_export_items(segments):
+        stamp = f"[{format_timestamp(start, '.')} --> {format_timestamp(end, '.')}] {text}"
+        paragraphs.append(_docx_paragraph(stamp, size=22))
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>" + "".join(paragraphs)
+        + '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>'
+        + "</w:body></w:document>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", rels)
+        archive.writestr("word/document.xml", document_xml)
+    return buffer.getvalue()
+
+
 def segments_to_srt(segments: list[Segment]) -> str:
     blocks = []
     index = 0
@@ -225,6 +321,7 @@ def build_export(
     segments: list[Segment],
     text: str,
     metadata: dict[str, Any],
+    word_level: bool = False,
 ) -> tuple[bytes, str, str]:
     """Return ``(payload, extension, mime)`` for a given export format."""
     fmt = (fmt or "").lower().strip()
@@ -233,18 +330,26 @@ def build_export(
 
     meta = EXPORTERS[fmt]
     if fmt == "txt":
-        payload = segments_to_timestamped_text(segments) or text
+        payload = (
+            segments_to_word_timestamped_text(segments)
+            if word_level
+            else segments_to_timestamped_text(segments)
+        ) or text
         return payload.encode("utf-8"), meta["extension"], meta["mime"]
     if fmt == "srt":
-        return segments_to_srt(segments).encode("utf-8"), meta["extension"], meta["mime"]
+        payload = segments_to_word_srt(segments) if word_level else segments_to_srt(segments)
+        return payload.encode("utf-8"), meta["extension"], meta["mime"]
     if fmt == "vtt":
-        return segments_to_vtt(segments).encode("utf-8"), meta["extension"], meta["mime"]
+        payload = segments_to_word_vtt(segments) if word_level else segments_to_vtt(segments)
+        return payload.encode("utf-8"), meta["extension"], meta["mime"]
     if fmt == "json":
         body = transcript_to_json(metadata, segments, text)
         return body.encode("utf-8"), meta["extension"], meta["mime"]
     if fmt == "csv":
-        return segments_to_csv(segments).encode("utf-8"), meta["extension"], meta["mime"]
+        payload = segments_to_word_csv(segments) if word_level else segments_to_csv(segments)
+        return payload.encode("utf-8"), meta["extension"], meta["mime"]
     if fmt == "docx":
         title = metadata.get("title") or "Transcript"
-        return segments_to_docx(title, segments), meta["extension"], meta["mime"]
+        payload = segments_to_word_docx(title, segments) if word_level else segments_to_docx(title, segments)
+        return payload, meta["extension"], meta["mime"]
     raise ValueError(f"Unsupported export format: {fmt!r}")

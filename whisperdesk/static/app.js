@@ -130,6 +130,7 @@ function statusMeta(status) {
     running: { label: "Transcribing", cls: "running" },
     loading: { label: "Loading model", cls: "loading" },
     queued: { label: "Queued", cls: "queued" },
+    paused: { label: "Paused", cls: "queued" },
     failed: { label: "Failed", cls: "failed" },
     cancelled: { label: "Cancelled", cls: "cancelled" },
     interrupted: { label: "Interrupted", cls: "interrupted" },
@@ -513,7 +514,7 @@ function maybePollLibrary() {
 }
 
 function isActiveStatus(status) {
-  return ["queued", "loading", "running", "saving"].includes(status);
+  return ["queued", "loading", "running", "saving", "paused"].includes(status);
 }
 
 async function refreshLibrary() {
@@ -596,6 +597,10 @@ function renderNewBody() {
       '<div class="social-url-row" style="display:flex;gap:8px;align-items:center"><div style="position:relative;flex:1"><input id="socialUrl" type="url" inputmode="url" autocomplete="url" placeholder="' + escapeHtml(selected.placeholder) + '" value="' + escapeHtml(state.socialUrl) + '" required ' + (state.socialFetching ? "disabled" : "") + ' style="padding-right:60px" />' +
       '<button class="btn btn-ghost" id="togglePasteClearBtn" type="button" ' + (state.socialFetching ? "disabled" : "") + ' style="position:absolute;right:4px;top:50%;transform:translateY(-50%);padding:4px 8px;min-width:auto;font-size:inherit">' + (state.socialUrl ? "Clear" : "Paste") + '</button></div>' +
       '<button class="btn btn-primary" id="fetchSocialBtn" type="submit" style="white-space:nowrap;' + (state.socialFetching ? "disabled" : "") + '>' + icon("download", 16) + '<span style="margin-left:6px">' + (state.socialFetching ? "Fetching…" : "Fetch & transcribe") + '</span></button></div>' +
+      (linkHistory().length ? '<div class="field mt"><label>Recent links</label><div class="stack" style="gap:6px">' +
+        linkHistory().map((item, i) => '<div class="row" style="gap:6px"><button type="button" class="btn btn-sm" data-recent="' + i + '" ' + (state.socialFetching ? "disabled" : "") + ' style="flex:1;justify-content:flex-start;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escapeHtml(item.url) + '">' + escapeHtml(item.url) + '</button>' +
+          '<button type="button" class="btn btn-ghost btn-sm" data-recent-del="' + i + '" title="Remove" aria-label="Remove from history">✕</button></div>').join("") +
+        '<button type="button" class="btn btn-ghost btn-sm" id="clearRecent" style="align-self:flex-start">Clear history</button></div></div>' : '') +
       '<span class="hint">Public posts only. Private, login-required, age-restricted, or region-blocked media may not be available.</span></div></div>' +
       '<div id="socialProgress" class="social-progress" ' + (state.socialFetching ? "" : "hidden") + '><div class="progress' + (state.socialProgressDeterminate ? "" : " indeterminate") + '"><div class="bar" style="width:' + (state.socialProgressPct || 0) + '%"></div></div><span>' + (state.socialProgressDeterminate && state.socialProgressPct > 0 ? (state.socialProgressPct === 100 ? "Complete" : state.socialProgressPct + "% downloaded") : "Retrieving media from " + escapeHtml(selected.label) + "...") + '</span>' +
       (!state.socialProgressDeterminate ? '<button class="btn btn-ghost mt-2" id="cancelSocialBtn">Cancel</button>' : '') + '</div>' +
@@ -633,6 +638,22 @@ function renderNewBody() {
         state.socialUrl = event.target.value;
         $("#togglePasteClearBtn").textContent = state.socialUrl ? "Clear" : "Paste";
     };
+    $$("[data-recent]", body).forEach((btn) => {
+      btn.onclick = () => {
+        const item = linkHistory()[Number(btn.dataset.recent)];
+        if (!item) return;
+        state.socialUrl = item.url;
+        if (item.platform) state.socialPlatform = item.platform;
+        renderNewBody();
+      };
+    });
+    $$("[data-recent-del]", body).forEach((btn) => {
+      btn.onclick = () => {
+        saveLinkHistory(linkHistory().filter((_, i) => i !== Number(btn.dataset.recentDel)));
+        renderNewBody();
+      };
+    });
+    if ($("#clearRecent")) $("#clearRecent").onclick = () => { saveLinkHistory([]); renderNewBody(); };
     $("#cancelSocialBtn").onclick = async () => {
       if (!confirm("Cancel this download and transcription?")) return;
       const jobId = state.socialJobId || "current";
@@ -669,11 +690,11 @@ function renderNewBody() {
       '<div class="dropzone" id="dropzone">' +
       '<div class="dropzone-icon">' + icon("upload", 26) + "</div>" +
       "<h3>Drop a file here</h3>" +
-      "<p>or click to browse. Your file is processed locally and never uploaded.</p>" +
+      "<p>Click to browse: the file is read in place, nothing is copied or uploaded. (Dragging a file in does upload it.)</p>" +
       '<span class="formats">' + supportedFormatsLabel() + "</span>" +
       "</div>";
     const dropzone = $("#dropzone");
-    dropzone.onclick = () => $("#fileInput").click();
+    dropzone.onclick = pickLocalFile;
     ["dragenter", "dragover"].forEach((evt) =>
       dropzone.addEventListener(evt, (e) => {
         e.preventDefault();
@@ -733,7 +754,7 @@ function renderNewBody() {
     '<div id="uploadProgress"></div>' +
     "</div>";
 
-  $("#changeFile").onclick = () => $("#fileInput").click();
+  $("#changeFile").onclick = pickLocalFile;
   $("#clearFile").onclick = () => {
     state.pendingFile = null;
     renderNewBody();
@@ -768,6 +789,7 @@ async function startSocialTranscription(event) {
   const input = $("#socialUrl");
   state.socialUrl = input.value.trim();
   if (!state.socialUrl) { input.focus(); return; }
+  rememberLink(state.socialUrl, state.socialPlatform);
   state.socialFetching = true;
   state.socialProgressPct = 0;
   state.socialProgressDeterminate = false;
@@ -804,6 +826,18 @@ async function startSocialTranscription(event) {
     if (state.socialAbortCtrl) state.socialAbortCtrl = null;
     if (state.view === "new" && state.inputMode === "link") renderNewBody();
   }
+}
+
+function linkHistory() {
+  try { return JSON.parse(localStorage.getItem("linkHistory") || "[]"); } catch (e) { return []; }
+}
+
+function saveLinkHistory(list) {
+  try { localStorage.setItem("linkHistory", JSON.stringify(list.slice(0, 10))); } catch (e) { /* storage unavailable */ }
+}
+
+function rememberLink(url, platform) {
+  saveLinkHistory([{ url, platform }, ...linkHistory().filter((item) => item.url !== url)]);
 }
 
 function supportedFormatsLabel() {
@@ -864,9 +898,50 @@ function acceptFile(file) {
   renderNewBody();
 }
 
+// Opens the OS file dialog on this computer and uses the file where it is (no upload).
+async function pickLocalFile() {
+  try {
+    const picked = await api("/api/pick-file", { method: "POST", timeout: 10 * 60 * 1000 });
+    if (picked.cancelled) return;
+    state.pendingFile = { name: picked.name, size: picked.size, path: picked.path };
+    renderNewBody();
+  } catch (err) {
+    toast(err.message + " Falling back to the browser file chooser (this uploads the file).", "warning");
+    $("#fileInput").click();
+  }
+}
+
+async function startFromPath(file) {
+  const startBtn = $("#startBtn");
+  startBtn.disabled = true;
+  try {
+    const data = await api("/api/jobs/from-path", {
+      method: "POST",
+      body: {
+        path: file.path,
+        model: state.options.model,
+        language: state.options.language,
+        task: state.options.task,
+        word_timestamps: state.options.wordTimestamps,
+      },
+    });
+    if (data.warning) toast(data.warning, "warning", "Heads up");
+    state.pendingFile = null;
+    state.currentJob = data.job;
+    state.transcript = { editing: false, query: "", follow: true, activeIndex: -1 };
+    setView("job");
+    startJobPolling(data.job.id);
+    refreshLibrary();
+  } catch (err) {
+    toast(err.message, "error", "Could not start");
+    startBtn.disabled = false;
+  }
+}
+
 function startTranscription() {
   const file = state.pendingFile;
   if (!file) return;
+  if (file.path) return startFromPath(file);
   const startBtn = $("#startBtn");
   startBtn.disabled = true;
 
@@ -994,7 +1069,40 @@ function updateJobLive() {
     '<div class="bar" style="width:' + Math.max(pct, determinate ? 2 : 38) + '%"></div></div>' +
     '<div class="progress-meta"><span>' + escapeHtml(message) +
     (phase === "loading" && job.downloadProgress != null ? " (downloading " + pct + "%)" : "") +
-    "</span><span>" + (determinate ? pct + "%" : "processing") + "</span></div></div>";
+    "</span><span>" + (determinate ? pct + "%" : "processing") + "</span></div></div>" +
+    '<div class="row mt" style="gap:8px">' + jobControls(job, "btn btn-sm") + "</div>";
+  bindJobControls(host);
+}
+
+function jobControls(job, cls) {
+  const id = job.id;
+  const paused = job.status === "paused";
+  return (
+    '<button class="' + cls + '" data-job-act="' + (paused ? "resume" : "pause") + '" data-job="' + id + '">' + (paused ? "Resume" : "Pause") + "</button>" +
+    (job.status === "queued" || paused ? '<button class="' + cls + '" data-job-act="prioritize" data-job="' + id + '" title="Move to the front of the queue">Prioritize</button>' : "") +
+    '<button class="' + cls + ' btn-danger" data-job-act="cancel" data-job="' + id + '">Cancel</button>'
+  );
+}
+
+function bindJobControls(root) {
+  $$("[data-job-act]", root).forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      try {
+        await api("/api/jobs/" + btn.dataset.job + "/" + btn.dataset.jobAct, { method: "POST" });
+        if (state.currentJob && state.currentJob.id === btn.dataset.job) {
+          const { job } = await api("/api/jobs/" + btn.dataset.job);
+          state.currentJob = job;
+          updateJobLive();
+        }
+        refreshLibrary();
+      } catch (err) {
+        toast(err.message, "error");
+        btn.disabled = false;
+      }
+    };
+  });
 }
 
 function renderJobError() {
@@ -1079,6 +1187,7 @@ function renderJobTranscript() {
     '<div class="transcript-toolbar" style="border-top:1px solid var(--border);border-bottom:none">' +
     '<span class="faint" style="font-size:12.5px">' + words + " words · " + text.length + " characters · " + segments.length + " segments</span>" +
     '<div class="spacer"></div>' +
+    (hasWordTimes ? '<label class="export-mode-field" for="exportTiming"><span>Export timing</span><select id="exportTiming" aria-label="Export timing"><option value="segment">Segment timestamps</option><option value="word">Word by word</option></select></label>' : '') +
     '<span class="faint" style="font-size:12px;margin-right:6px">Export</span>' +
     '<div class="row wrap" style="gap:6px" id="exportRow"></div>' +
     "</div></div>";
@@ -1124,7 +1233,10 @@ function renderExportRow() {
       event.preventDefault();
       const format = link.dataset.exportFormat;
       try {
-        const response = await fetch(link.href, { cache: "no-store" });
+        const exportUrl = new URL(link.href, window.location.href);
+        const wordLevel = $("#exportTiming") && $("#exportTiming").value === "word";
+        if (wordLevel) exportUrl.searchParams.set("word_level", "1");
+        const response = await fetch(exportUrl.toString(), { cache: "no-store" });
         if (!response.ok) {
           let message = "Export failed (" + response.status + ").";
           try { message = (await response.json()).error || message; } catch (err) { /* keep status */ }
@@ -1508,6 +1620,7 @@ function libraryFullRow(job) {
     "<span>" + escapeHtml(languageLabel(job.language)) + "</span></div></div>" +
     '<span class="badge ' + meta.cls + '"><i class="dot"></i>' + meta.label + "</span>" +
     '<div class="actions">' +
+    (isActiveStatus(job.status) ? jobControls(job, "btn btn-sm") : "") +
     (job.status === "completed"
       ? '<a class="btn btn-sm" href="/api/jobs/' + job.id + '/export/txt" download title="Download TXT">' + icon("download", 15) + "</a>"
       : "") +
@@ -1525,6 +1638,7 @@ function bindLibraryRows(root) {
       openJob(row.dataset.id);
     };
   });
+  bindJobControls(root);
   $$("[data-rename]", root).forEach((btn) => {
     btn.onclick = async (e) => {
       e.stopPropagation();

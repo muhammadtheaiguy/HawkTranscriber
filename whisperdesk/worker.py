@@ -216,14 +216,17 @@ def _handle_transcribe(
             "task": task,
             "fp16": use_fp16,
             "verbose": False,
+            # Verbatim mode: disable every Whisper filter that drops or rewrites
+            # speech (repeats, retakes, "silence"). Word timestamps follow the toggle.
             "word_timestamps": bool(command.get("word_timestamps")),
-            "condition_on_previous_text": bool(
-                command.get("condition_on_previous_text", True)
-            ),
+            "condition_on_previous_text": False,  # stops repeats being collapsed/skipped
+            "compression_ratio_threshold": None,  # else repetitive segments are discarded
+            "logprob_threshold": None,  # else stutters/mumbles are re-decoded or dropped
+            "no_speech_threshold": None,  # else quiet speech is treated as silence
+            "temperature": 0.0,  # deterministic, no fallback re-decoding
+            "hallucination_silence_threshold": None,
         }
-        beam_size = command.get("beam_size")
-        if beam_size:
-            options["beam_size"] = int(beam_size)
+        options["beam_size"] = int(command.get("beam_size") or 5)
         initial_prompt = command.get("initial_prompt")
         if initial_prompt:
             options["initial_prompt"] = initial_prompt
