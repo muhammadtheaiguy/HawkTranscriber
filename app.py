@@ -41,6 +41,41 @@ def _pick_port(preferred: int) -> int:
         return sock.getsockname()[1]
 
 
+def _running_instance() -> str | None:
+    """URL of an already-running HawkTranscriber, so a second launch just reopens it."""
+    import urllib.request
+
+    for port in range(8501, 8511):
+        url = f"http://localhost:{port}/"
+        try:
+            with urllib.request.urlopen(url, timeout=0.5) as response:
+                if b"HawkTranscriber" in response.read(4096):
+                    return url
+        except Exception:
+            continue
+    return None
+
+
+def _open_window(url: str) -> None:
+    """Open as a standalone app window (Edge/Chrome --app); fall back to the browser."""
+    import shutil
+    import subprocess
+    import webbrowser
+
+    candidates = [
+        shutil.which("msedge"),
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        shutil.which("chrome"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    ]
+    for exe in candidates:
+        if exe and os.path.exists(exe):
+            subprocess.Popen([exe, f"--app={url}"])
+            return
+    webbrowser.open(url)
+
+
 def _check_dependencies() -> None:
     missing = []
     for module, package in (
@@ -63,6 +98,19 @@ def _check_dependencies() -> None:
 
 def main() -> None:
     multiprocessing.freeze_support()
+
+    # Launched without a console (pythonw / shortcut): send output to a log file.
+    if sys.stdout is None or sys.stderr is None:
+        from pathlib import Path
+
+        log_dir = Path(os.environ.get("WHISPERDESK_DATA") or Path(__file__).parent / "data") / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(log_dir / "launcher.log", "a", encoding="utf-8", buffering=1)
+
+    existing = _running_instance()
+    if existing and os.environ.get("WHISPERDESK_NO_BROWSER") != "1":
+        _open_window(existing)
+        return
     _check_dependencies()
 
     from whisperdesk import paths
@@ -94,9 +142,8 @@ def main() -> None:
 
     if os.environ.get("WHISPERDESK_NO_BROWSER") != "1":
         import threading
-        import webbrowser
 
-        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+        threading.Timer(1.2, lambda: _open_window(url)).start()
 
     import uvicorn
 
